@@ -157,8 +157,8 @@ def render_full_youtube_result(result, key_prefix):
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["📝 Summarize", "💬 Sentiment", "🔍 Full Analysis", "🎥 YouTube Comments", "⚖️ Compare Videos"]
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["📝 Summarize", "💬 Sentiment", "🔍 Full Analysis", "🎥 YouTube Comments"]
 )
 
 with tab1:
@@ -252,92 +252,3 @@ with tab4:
         if "yt_result" in st.session_state and st.session_state["yt_result"].get("comments"):
             st.divider()
             render_full_youtube_result(st.session_state["yt_result"], key_prefix="yt")
-
-# ---------------------------------------------------------------------------
-# Tab 5: compare two videos side-by-side — real data only
-# ---------------------------------------------------------------------------
-with tab5:
-    st.subheader("Compare Two Videos")
-    st.markdown("Paste two real YouTube video links to compare audience sentiment side-by-side.")
-
-    if not YOUTUBE_API_KEY:
-        st.error("⚠️ YOUTUBE_API_KEY not found in secrets. Add it to `.streamlit/secrets.toml` to use this tab.")
-    else:
-        col_a, col_b = st.columns(2)
-        with col_a:
-            cmp_url_1 = st.text_input("Video A URL:", key="cmp_url_1",
-                                       placeholder="https://www.youtube.com/watch?v=...")
-        with col_b:
-            cmp_url_2 = st.text_input("Video B URL:", key="cmp_url_2",
-                                       placeholder="https://www.youtube.com/watch?v=...")
-
-        cmp_max_comments = st.number_input("Max comments per video", min_value=20, max_value=500, value=150, step=20)
-
-        if st.button("⚖️ Compare", key="cmp_btn"):
-            if not cmp_url_1.strip() or not cmp_url_2.strip():
-                st.warning("Please paste both video URLs.")
-            else:
-                progress_a = st.progress(0.0, text="Analyzing Video A...")
-                with st.spinner("Analyzing Video A..."):
-                    result_a = run_youtube_analysis(
-                        cmp_url_1, cmp_max_comments, YOUTUBE_API_KEY, OPENROUTER_API_KEY,
-                        progress_callback=lambda p: progress_a.progress(p, text=f"Video A: classifying... {int(p * 100)}%"),
-                    )
-                progress_a.empty()
-
-                progress_b = st.progress(0.0, text="Analyzing Video B...")
-                with st.spinner("Analyzing Video B..."):
-                    result_b = run_youtube_analysis(
-                        cmp_url_2, cmp_max_comments, YOUTUBE_API_KEY, OPENROUTER_API_KEY,
-                        progress_callback=lambda p: progress_b.progress(p, text=f"Video B: classifying... {int(p * 100)}%"),
-                    )
-                progress_b.empty()
-
-                st.session_state["cmp_result_a"] = result_a
-                st.session_state["cmp_result_b"] = result_b
-
-        if st.session_state.get("cmp_result_a") and st.session_state.get("cmp_result_b"):
-            result_a = st.session_state["cmp_result_a"]
-            result_b = st.session_state["cmp_result_b"]
-
-            st.divider()
-
-            if result_a["resolve_error"] or result_b["resolve_error"]:
-                if result_a["resolve_error"]:
-                    st.error(f"Video A: {result_a['resolve_error']}")
-                if result_b["resolve_error"]:
-                    st.error(f"Video B: {result_b['resolve_error']}")
-            else:
-                # Side-by-side sentiment comparison chart
-                comments_a = result_a.get("comments") or []
-                comments_b = result_b.get("comments") or []
-
-                if comments_a and comments_b:
-                    df_a = pd.DataFrame(comments_a)
-                    df_b = pd.DataFrame(comments_b)
-                    counts_a = df_a["sentiment"].value_counts().reindex(["Positive", "Negative", "Neutral"]).fillna(0)
-                    counts_b = df_b["sentiment"].value_counts().reindex(["Positive", "Negative", "Neutral"]).fillna(0)
-
-                    title_a = result_a["video_meta"]["title"] if result_a.get("video_meta") else "Video A"
-                    title_b = result_b["video_meta"]["title"] if result_b.get("video_meta") else "Video B"
-
-                    pct_a = (counts_a / counts_a.sum() * 100).round(1) if counts_a.sum() else counts_a
-                    pct_b = (counts_b / counts_b.sum() * 100).round(1) if counts_b.sum() else counts_b
-
-                    compare_df = pd.DataFrame({
-                        (title_a[:40] + "…") if len(title_a) > 40 else title_a: pct_a,
-                        (title_b[:40] + "…") if len(title_b) > 40 else title_b: pct_b,
-                    })
-
-                    st.markdown("### 📊 Sentiment Comparison (% of comments)")
-                    st.bar_chart(compare_df)
-
-                st.divider()
-
-                col_left, col_right = st.columns(2)
-                with col_left:
-                    st.markdown("## 🅰️ Video A")
-                    render_full_youtube_result(result_a, key_prefix="cmp_a")
-                with col_right:
-                    st.markdown("## 🅱️ Video B")
-                    render_full_youtube_result(result_b, key_prefix="cmp_b")
