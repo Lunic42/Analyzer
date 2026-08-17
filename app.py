@@ -2,7 +2,7 @@ import os
 import streamlit as st
 import pandas as pd
 
-from api_utils import call_openrouter, classify_all_comments, generate_executive_summary, MODEL_OPTIONS, DEFAULT_MODEL
+from api_utils import call_openrouter, classify_all_comments, generate_executive_summary, DEFAULT_MODEL
 from youtube_utils import (
     extract_video_id,
     extract_channel_id,
@@ -135,8 +135,7 @@ with tab4:
         with col_b:
             max_comments = st.number_input("Max comments", min_value=20, max_value=1000, value=200, step=20)
 
-        model_label = st.selectbox("Sentiment model (via OpenRouter)", list(MODEL_OPTIONS.keys()), index=0)
-        sentiment_model = MODEL_OPTIONS[model_label]
+        sentiment_model = DEFAULT_MODEL
 
         fetch_clicked = st.button("🔎 Fetch & Analyze Comments", key="yt_fetch_btn")
 
