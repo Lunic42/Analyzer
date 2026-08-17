@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 
 from api_utils import call_openrouter, classify_all_comments, generate_executive_summary, DEFAULT_MODEL
-from text_utils import generate_wordcloud_image, get_word_frequencies
+#from text_utils import generate_wordcloud_image, get_word_frequencies
 from youtube_utils import (
     extract_video_id,
     extract_channel_id,
