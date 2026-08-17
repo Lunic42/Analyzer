@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 
 from api_utils import call_openrouter, classify_all_comments, generate_executive_summary, DEFAULT_MODEL
+from text_utils import generate_wordcloud_image, get_word_frequencies
 from youtube_utils import (
     extract_video_id,
     extract_channel_id,
@@ -231,6 +232,38 @@ with tab4:
             c4.metric("Neutral", int(counts.get("Neutral", 0)))
 
             st.bar_chart(counts)
+
+            st.markdown("### ☁️ Word Cloud & Top Keywords")
+            wc_all, wc_pos, wc_neg, wc_neu = st.tabs(["All", "😊 Positive", "😠 Negative", "😐 Neutral"])
+
+            def show_wordcloud(frame):
+                comment_list = frame.to_dict("records")
+                if not comment_list:
+                    st.info("No comments in this category.")
+                    return
+                img = generate_wordcloud_image(comment_list)
+                col_img, col_words = st.columns([2, 1])
+                with col_img:
+                    if img is not None:
+                        st.image(img, use_container_width=True)
+                    else:
+                        st.info("Not enough text to build a word cloud.")
+                with col_words:
+                    top_words = get_word_frequencies(comment_list, top_n=10)
+                    if top_words:
+                        words_df = pd.DataFrame(top_words, columns=["Word", "Count"]).set_index("Word")
+                        st.dataframe(words_df, use_container_width=True)
+                    else:
+                        st.info("No keywords to show.")
+
+            with wc_all:
+                show_wordcloud(df)
+            with wc_pos:
+                show_wordcloud(df[df["sentiment"] == "Positive"])
+            with wc_neg:
+                show_wordcloud(df[df["sentiment"] == "Negative"])
+            with wc_neu:
+                show_wordcloud(df[df["sentiment"] == "Neutral"])
 
             st.markdown("### 💬 Comments")
             filt_all, filt_pos, filt_neg, filt_neu = st.tabs(["All", "😊 Positive", "😠 Negative", "😐 Neutral"])
