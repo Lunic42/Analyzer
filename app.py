@@ -4,11 +4,13 @@ import pandas as pd
 
 from api_utils import call_openrouter, DEFAULT_MODEL
 from analysis import run_youtube_analysis
+from ui_theme import inject_theme, masthead, dispatch_card, sentiment_chip_row, ACCENT
 
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Article Analyzer", page_icon="📰", layout="wide")
+st.set_page_config(page_title="Article Analyzer", page_icon="🗞️", layout="wide")
+inject_theme()
 
 
 def get_secret(name):
@@ -35,9 +37,12 @@ if not OPENROUTER_API_KEY:
     """)
     st.stop()
 
-# Title
-st.title("📰 Article Analyzer")
-st.markdown("Paste any article — or a real YouTube video/channel link — to get AI-powered sentiment analysis and summarization.")
+# Masthead
+masthead(
+    eyebrow="Live Wire · Sentiment Desk",
+    title="The Article Analyzer",
+    subtitle="Filed from real articles and real YouTube comment threads — sentiment, summary, and the numbers behind them.",
+)
 
 
 def summarize_with_llm(text):
@@ -76,7 +81,12 @@ RENAME_COLS = {
 def render_video_meta(video_meta):
     if not video_meta:
         return
-    st.markdown(f"**{video_meta['title']}** — {video_meta['channel']}")
+    st.markdown(
+        f"<div style='font-family:\"IBM Plex Mono\",monospace; color:#A69A85; font-size:0.85rem; "
+        f"margin-bottom:0.5rem;'>ON THE WIRE — <span style='color:#F2E9DA;'>{video_meta['title']}</span> "
+        f"· {video_meta['channel']}</div>",
+        unsafe_allow_html=True,
+    )
     m1, m2, m3 = st.columns(3)
     m1.metric("Views", f"{video_meta['view_count']:,}")
     m2.metric("Likes", f"{video_meta['like_count']:,}")
@@ -85,12 +95,12 @@ def render_video_meta(video_meta):
 
 def render_sentiment_breakdown(df):
     counts = df["sentiment"].value_counts().reindex(["Positive", "Negative", "Neutral"]).fillna(0).astype(int)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Comments analyzed", len(df))
-    c2.metric("Positive", int(counts.get("Positive", 0)))
-    c3.metric("Negative", int(counts.get("Negative", 0)))
-    c4.metric("Neutral", int(counts.get("Neutral", 0)))
-    st.bar_chart(counts)
+    sentiment_chip_row({"Positive": int(counts.get("Positive", 0)),
+                         "Negative": int(counts.get("Negative", 0)),
+                         "Neutral": int(counts.get("Neutral", 0))}, total=len(df))
+    st.write("")
+    chart_df = counts.rename("Comments").to_frame()
+    st.bar_chart(chart_df, color=ACCENT)
     return counts
 
 
@@ -130,7 +140,8 @@ def render_full_youtube_result(result, key_prefix):
     if result.get("summary_error"):
         st.error(result["summary_error"])
     elif result.get("summary"):
-        st.markdown(result["summary"])
+        with dispatch_card():
+            st.markdown(result["summary"])
 
     comments = result.get("comments") or []
     if not comments:
@@ -162,31 +173,33 @@ tab1, tab2, tab3, tab4 = st.tabs(
 )
 
 with tab1:
-    st.subheader("Summarize Article")
+    st.markdown("##### Summarize Article")
     text1 = st.text_area("Paste your article here:", height=200, key="summary",
                           placeholder="Enter or paste your article text here...")
     if st.button("📝 Summarize", key="sum_btn"):
         if text1 and text1.strip():
             with st.spinner("Summarizing..."):
                 st.markdown("### Summary")
-                st.write(summarize_with_llm(text1))
+                with dispatch_card():
+                    st.write(summarize_with_llm(text1))
         else:
             st.warning("Please enter some text to summarize.")
 
 with tab2:
-    st.subheader("Sentiment Analysis")
+    st.markdown("##### Sentiment Analysis")
     text2 = st.text_area("Paste your article here:", height=200, key="sentiment",
                           placeholder="Enter or paste your article text here...")
     if st.button("💬 Analyze Sentiment", key="sent_btn"):
         if text2 and text2.strip():
             with st.spinner("Analyzing sentiment..."):
                 st.markdown("### Sentiment Result")
-                st.write(analyze_sentiment(text2))
+                with dispatch_card():
+                    st.write(analyze_sentiment(text2))
         else:
             st.warning("Please enter some text to analyze.")
 
 with tab3:
-    st.subheader("Full Analysis")
+    st.markdown("##### Full Analysis")
     text3 = st.text_area("Paste your article here:", height=200, key="full",
                           placeholder="Enter or paste your article text here...")
     if st.button("🔍 Run Full Analysis", key="full_btn"):
@@ -195,10 +208,12 @@ with tab3:
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown("### 📊 Sentiment")
-                    st.write(analyze_sentiment(text3))
+                    with dispatch_card():
+                        st.write(analyze_sentiment(text3))
                 with col2:
                     st.markdown("### 📝 Summary")
-                    st.write(summarize_with_llm(text3))
+                    with dispatch_card():
+                        st.write(summarize_with_llm(text3))
         else:
             st.warning("Please enter some text to analyze.")
 
@@ -206,8 +221,8 @@ with tab3:
 # Tab 4: single YouTube video/channel — real data only
 # ---------------------------------------------------------------------------
 with tab4:
-    st.subheader("YouTube Comment Analyzer")
-    st.markdown("Pull real comments from a video (or a whole channel), classify sentiment, and get an executive summary.")
+    st.markdown("##### YouTube Comment Analyzer")
+    st.caption("Pull real comments from a video (or a whole channel), classify sentiment, and get an executive summary.")
 
     if not YOUTUBE_API_KEY:
         st.error("⚠️ YOUTUBE_API_KEY not found in secrets. Add it to `.streamlit/secrets.toml` to use this tab.")
