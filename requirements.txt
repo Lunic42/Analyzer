@@ -6,4 +6,5 @@ streamlit
 requests
 python-dotenv
 pandas
-wordcloud
+python-docx
+pypdf

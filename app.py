@@ -2,15 +2,20 @@ import os
 import streamlit as st
 import pandas as pd
 
-from api_utils import call_openrouter, DEFAULT_MODEL
+import ui_theme
+from ui_theme import inject_theme, masthead, sidebar_brand, dispatch_card, sentiment_chip_row, copy_button
+from api_utils import summarize_long_text, analyze_sentiment_long, DEFAULT_MODEL
 from analysis import run_youtube_analysis
-from ui_theme import inject_theme, masthead, dispatch_card, sentiment_chip_row, ACCENT
+from file_utils import extract_text_from_upload
+from history_utils import add_history_entry, get_history, clear_history
 
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Article Analyzer", page_icon="🗞️", layout="wide")
-inject_theme()
+
+if "dark_mode" not in st.session_state:
+    st.session_state["dark_mode"] = True
 
 
 def get_secret(name):
@@ -22,6 +27,28 @@ def get_secret(name):
 
 OPENROUTER_API_KEY = get_secret("OPENROUTER_API_KEY")
 YOUTUBE_API_KEY = get_secret("YOUTUBE_API_KEY")
+
+# ---------------------------------------------------------------------------
+# Sidebar — theme toggle first (so it applies before we render anything else),
+# then brand + nav
+# ---------------------------------------------------------------------------
+PAGES = ["📝 Summarize", "💬 Sentiment", "🔍 Full Analysis", "🎥 YouTube Comments", "🕘 History"]
+
+if "nav_page" not in st.session_state:
+    st.session_state["nav_page"] = PAGES[0]
+
+with st.sidebar:
+    
+
+    sidebar_brand("Navigate")
+    for p in PAGES:
+        is_active = st.session_state["nav_page"] == p
+        if st.button(p, key=f"nav_btn_{p}", use_container_width=True,
+                     type="primary" if is_active else "secondary"):
+            st.session_state["nav_page"] = p
+            st.rerun()
+
+page = st.session_state["nav_page"]
 
 if not OPENROUTER_API_KEY:
     st.error("⚠️ OpenRouter API key not found! Please set OPENROUTER_API_KEY in Streamlit secrets.")
@@ -37,31 +64,58 @@ if not OPENROUTER_API_KEY:
     """)
     st.stop()
 
-# Masthead
-masthead(
-    eyebrow="Live Wire · Sentiment Desk",
-    title="The Article Analyzer",
-    subtitle="Filed from real articles and real YouTube comment threads — sentiment, summary, and the numbers behind them.",
-)
+# Long-article threshold — text longer than this (characters) is processed in
+# real chunks (multiple real API calls) with a real per-chunk progress bar.
+LONG_TEXT_CHARS = 6000
 
 
-def summarize_with_llm(text):
-    system_prompt = (
-        "You are a helpful assistant. Summarize the following text concisely:\n"
-        "- Keep it to 2-3 sentences\n- Capture the main points\n- Be clear and direct"
+def char_count_caption(text):
+    chars = len(text) if text else 0
+    note = " — will process in chunks with a progress bar" if chars > LONG_TEXT_CHARS else ""
+    st.caption(f"📝 {chars:,} characters{note}")
+
+
+def summarize_with_llm(text, progress_callback=None):
+    summary, _key_phrases, error = summarize_long_text(
+        OPENROUTER_API_KEY, DEFAULT_MODEL, text,
+        chunk_chars=LONG_TEXT_CHARS, progress_callback=progress_callback,
     )
-    result, error = call_openrouter(OPENROUTER_API_KEY, DEFAULT_MODEL, system_prompt, text, max_tokens=500)
+    return error if error else summary
+
+
+def analyze_sentiment(text, progress_callback=None):
+    result, error = analyze_sentiment_long(
+        OPENROUTER_API_KEY, DEFAULT_MODEL, text,
+        chunk_chars=LONG_TEXT_CHARS, progress_callback=progress_callback,
+    )
     return error if error else result
 
 
-def analyze_sentiment(text):
-    system_prompt = (
-        "You are a sentiment analysis expert. Analyze the sentiment of the following text and respond with:\n"
-        "- Sentiment: Positive/Negative/Neutral/Mixed\n- Confidence: XX%\n"
-        "- Brief explanation of your decision\nKeep it brief and well-formatted."
+def run_with_progress(fn, text, label):
+    progress = st.progress(0.0, text=label)
+    result = fn(text, progress_callback=lambda p: progress.progress(p, text=f"{label} {int(p * 100)}%"))
+    progress.empty()
+    return result
+
+
+def file_or_pasted_text(uploader_key, textarea_value):
+    """
+    Returns (effective_text, source_label). If a file is uploaded, its real
+    extracted text wins (shown in a preview expander); otherwise falls back
+    to whatever was pasted into the text area.
+    """
+    uploaded = st.file_uploader(
+        "Or upload a file (PDF, DOCX, or TXT):", type=["pdf", "docx", "txt"], key=uploader_key,
     )
-    result, error = call_openrouter(OPENROUTER_API_KEY, DEFAULT_MODEL, system_prompt, text, max_tokens=500)
-    return error if error else result
+    if uploaded is not None:
+        extracted, error = extract_text_from_upload(uploaded)
+        if error:
+            st.error(error)
+            return textarea_value, "pasted text"
+        with st.expander(f"📄 Extracted text from {uploaded.name}", expanded=False):
+            st.text(extracted[:3000] + ("…" if len(extracted) > 3000 else ""))
+        return extracted, f"file: {uploaded.name}"
+    return textarea_value, "pasted text"
 
 
 # ---------------------------------------------------------------------------
@@ -82,15 +136,16 @@ def render_video_meta(video_meta):
     if not video_meta:
         return
     st.markdown(
-        f"<div style='font-family:\"IBM Plex Mono\",monospace; color:#A69A85; font-size:0.85rem; "
-        f"margin-bottom:0.5rem;'>ON THE WIRE — <span style='color:#F2E9DA;'>{video_meta['title']}</span> "
+        f"<div style='font-family:\"IBM Plex Mono\",monospace; color:{ui_theme.TEXT_MUTED}; font-size:0.85rem; "
+        f"margin-bottom:0.5rem;'>ON THE WIRE — <span style='color:{ui_theme.TEXT};'>{video_meta['title']}</span> "
         f"· {video_meta['channel']}</div>",
         unsafe_allow_html=True,
     )
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Views", f"{video_meta['view_count']:,}")
-    m2.metric("Likes", f"{video_meta['like_count']:,}")
-    m3.metric("Total comments (on video)", f"{video_meta['comment_count']:,}")
+    with st.expander("📺 Video details", expanded=False):
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Views", f"{video_meta['view_count']:,}")
+        m2.metric("Likes", f"{video_meta['like_count']:,}")
+        m3.metric("Total comments (on video)", f"{video_meta['comment_count']:,}")
 
 
 def render_sentiment_breakdown(df):
@@ -100,7 +155,7 @@ def render_sentiment_breakdown(df):
                          "Neutral": int(counts.get("Neutral", 0))}, total=len(df))
     st.write("")
     chart_df = counts.rename("Comments").to_frame()
-    st.bar_chart(chart_df, color=ACCENT)
+    st.bar_chart(chart_df, color=ui_theme.ACCENT)
     return counts
 
 
@@ -133,15 +188,16 @@ def render_comment_tabs(df):
 
 
 def render_full_youtube_result(result, key_prefix):
-    """Render video meta, executive summary, sentiment breakdown, and comment tables for one analyzed video."""
     render_video_meta(result.get("video_meta"))
 
     st.markdown("### 🧾 Executive Summary")
     if result.get("summary_error"):
         st.error(result["summary_error"])
     elif result.get("summary"):
-        with dispatch_card():
-            st.markdown(result["summary"])
+        with st.expander("Executive summary", expanded=True):
+            with dispatch_card():
+                st.markdown(result["summary"])
+            copy_button(result["summary"], key=f"{key_prefix}_summary_copy")
 
     comments = result.get("comments") or []
     if not comments:
@@ -154,7 +210,8 @@ def render_full_youtube_result(result, key_prefix):
     render_sentiment_breakdown(df)
 
     st.markdown("### 💬 Comments")
-    render_comment_tabs(df)
+    with st.expander("View all comments", expanded=True):
+        render_comment_tabs(df)
 
     st.download_button(
         "⬇️ Download comments as CSV",
@@ -166,61 +223,100 @@ def render_full_youtube_result(result, key_prefix):
 
 
 # ---------------------------------------------------------------------------
-# Tabs
+# Masthead (main content area)
 # ---------------------------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["📝 Summarize", "💬 Sentiment", "🔍 Full Analysis", "🎥 YouTube Comments"]
+masthead(
+    eyebrow="Live Wire · Sentiment Desk",
+    title="The Article Analyzer",
+    subtitle="Filed from real articles and real YouTube comment threads — sentiment, summary, and the numbers behind them.",
 )
 
-with tab1:
+# ---------------------------------------------------------------------------
+# Page: Summarize
+# ---------------------------------------------------------------------------
+if page == PAGES[0]:
     st.markdown("##### Summarize Article")
-    text1 = st.text_area("Paste your article here:", height=200, key="summary",
+    effective_text, source = file_or_pasted_text("upload_summary", st.session_state.get("summary_text", ""))
+    text1 = st.text_area("Paste your article here:", height=200, key="summary_text",
                           placeholder="Enter or paste your article text here...")
+    if source == "pasted text":
+        effective_text = text1
+    char_count_caption(effective_text)
+
     if st.button("📝 Summarize", key="sum_btn"):
-        if text1 and text1.strip():
-            with st.spinner("Summarizing..."):
-                st.markdown("### Summary")
+        if effective_text and effective_text.strip():
+            result = run_with_progress(summarize_with_llm, effective_text, "Summarizing...")
+            st.markdown("### Summary")
+            with st.expander("Full summary", expanded=True):
                 with dispatch_card():
-                    st.write(summarize_with_llm(text1))
+                    st.write(result)
+                copy_button(result, key="summary_result_copy")
+            add_history_entry("Summarize", effective_text, result)
         else:
-            st.warning("Please enter some text to summarize.")
+            st.warning("Please enter some text or upload a file to summarize.")
 
-with tab2:
+# ---------------------------------------------------------------------------
+# Page: Sentiment
+# ---------------------------------------------------------------------------
+elif page == PAGES[1]:
     st.markdown("##### Sentiment Analysis")
-    text2 = st.text_area("Paste your article here:", height=200, key="sentiment",
+    effective_text, source = file_or_pasted_text("upload_sentiment", st.session_state.get("sentiment_text", ""))
+    text2 = st.text_area("Paste your article here:", height=200, key="sentiment_text",
                           placeholder="Enter or paste your article text here...")
+    if source == "pasted text":
+        effective_text = text2
+    char_count_caption(effective_text)
+
     if st.button("💬 Analyze Sentiment", key="sent_btn"):
-        if text2 and text2.strip():
-            with st.spinner("Analyzing sentiment..."):
-                st.markdown("### Sentiment Result")
+        if effective_text and effective_text.strip():
+            result = run_with_progress(analyze_sentiment, effective_text, "Analyzing sentiment...")
+            st.markdown("### Sentiment Result")
+            with st.expander("Full sentiment result", expanded=True):
                 with dispatch_card():
-                    st.write(analyze_sentiment(text2))
+                    st.write(result)
+                copy_button(result, key="sentiment_result_copy")
+            add_history_entry("Sentiment", effective_text, result)
         else:
-            st.warning("Please enter some text to analyze.")
+            st.warning("Please enter some text or upload a file to analyze.")
 
-with tab3:
+# ---------------------------------------------------------------------------
+# Page: Full Analysis
+# ---------------------------------------------------------------------------
+elif page == PAGES[2]:
     st.markdown("##### Full Analysis")
-    text3 = st.text_area("Paste your article here:", height=200, key="full",
+    effective_text, source = file_or_pasted_text("upload_full", st.session_state.get("full_text", ""))
+    text3 = st.text_area("Paste your article here:", height=200, key="full_text",
                           placeholder="Enter or paste your article text here...")
+    if source == "pasted text":
+        effective_text = text3
+    char_count_caption(effective_text)
+
     if st.button("🔍 Run Full Analysis", key="full_btn"):
-        if text3 and text3.strip():
-            with st.spinner("Performing full analysis..."):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("### 📊 Sentiment")
+        if effective_text and effective_text.strip():
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("### 📊 Sentiment")
+                sentiment_result = run_with_progress(analyze_sentiment, effective_text, "Analyzing sentiment...")
+                with st.expander("Full sentiment result", expanded=True):
                     with dispatch_card():
-                        st.write(analyze_sentiment(text3))
-                with col2:
-                    st.markdown("### 📝 Summary")
+                        st.write(sentiment_result)
+                    copy_button(sentiment_result, key="full_sentiment_copy")
+            with col2:
+                st.markdown("### 📝 Summary")
+                summary_result = run_with_progress(summarize_with_llm, effective_text, "Summarizing...")
+                with st.expander("Full summary", expanded=True):
                     with dispatch_card():
-                        st.write(summarize_with_llm(text3))
+                        st.write(summary_result)
+                    copy_button(summary_result, key="full_summary_copy")
+            add_history_entry("Full Analysis", effective_text,
+                               f"Sentiment: {sentiment_result}\n\nSummary: {summary_result}")
         else:
-            st.warning("Please enter some text to analyze.")
+            st.warning("Please enter some text or upload a file to analyze.")
 
 # ---------------------------------------------------------------------------
-# Tab 4: single YouTube video/channel — real data only
+# Page: YouTube Comments — real data only
 # ---------------------------------------------------------------------------
-with tab4:
+elif page == PAGES[3]:
     st.markdown("##### YouTube Comment Analyzer")
     st.caption("Pull real comments from a video (or a whole channel), classify sentiment, and get an executive summary.")
 
@@ -246,11 +342,10 @@ with tab4:
                 st.warning("Please paste a YouTube video or channel URL.")
             else:
                 progress = st.progress(0.0, text="Fetching and analyzing...")
-                with st.spinner(f"Fetching up to {max_comments} real comments and classifying sentiment..."):
-                    result = run_youtube_analysis(
-                        yt_url, max_comments, YOUTUBE_API_KEY, OPENROUTER_API_KEY,
-                        progress_callback=lambda p: progress.progress(p, text=f"Classifying sentiment... {int(p * 100)}%"),
-                    )
+                result = run_youtube_analysis(
+                    yt_url, max_comments, YOUTUBE_API_KEY, OPENROUTER_API_KEY,
+                    progress_callback=lambda p: progress.progress(p, text=f"Classifying sentiment... {int(p * 100)}%"),
+                )
                 progress.empty()
 
                 if result["resolve_error"]:
@@ -263,7 +358,39 @@ with tab4:
                             for e in result["batch_errors"]:
                                 st.write(e)
                     st.session_state["yt_result"] = result
+                    if result.get("comments"):
+                        title = result["video_meta"]["title"] if result.get("video_meta") else yt_url
+                        add_history_entry(
+                            "YouTube", title,
+                            result.get("summary") or "(no summary)",
+                            extra={"comment_count": len(result["comments"])},
+                        )
 
         if "yt_result" in st.session_state and st.session_state["yt_result"].get("comments"):
             st.divider()
             render_full_youtube_result(st.session_state["yt_result"], key_prefix="yt")
+
+# ---------------------------------------------------------------------------
+# Page: History
+# ---------------------------------------------------------------------------
+elif page == PAGES[4]:
+    st.markdown("##### Session History")
+    st.caption("Everything you've run this session — resets when the browser tab closes.")
+
+    entries = get_history()
+    if not entries:
+        st.info("No history yet — results from Summarize, Sentiment, Full Analysis, and YouTube will show up here.")
+    else:
+        if st.button("🗑️ Clear history", key="clear_history_btn"):
+            clear_history()
+            st.rerun()
+
+        for i, entry in enumerate(entries):
+            title = f"{entry['kind']} · {entry['time']}"
+            with st.expander(title, expanded=(i == 0)):
+                st.caption("Input")
+                st.write(entry["input_preview"])
+                st.caption("Result")
+                with dispatch_card():
+                    st.write(entry["result_preview"])
+                copy_button(entry["result_preview"], key=f"history_copy_{i}")

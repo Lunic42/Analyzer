@@ -1,31 +1,68 @@
 """
 Visual theme for Article Analyzer — a "wire desk" identity: the app reads like
 a press-analysis terminal pulling live reports off a wire. Warm ink-black
-background, a brass/amber accent (teletype phosphor, not neon), a serif
-masthead for headlines paired with a monospace face for data and labels.
+(or, in light mode, warm parchment) background, a brass/amber accent, a serif
+masthead paired with a monospace face for data and labels.
 
-Everything here is presentation only — no business logic.
+Everything here is presentation only — no business logic. Color tokens are
+plain module-level globals that get reassigned by set_theme_mode(); every
+function below reads them by name at call time, so callers should always
+call set_theme_mode() (if switching modes) before inject_theme()/masthead()/etc.
+in the same run.
 """
+import html
 import streamlit as st
 
 # ---------------------------------------------------------------------------
-# Design tokens
+# Palettes
 # ---------------------------------------------------------------------------
-INK = "#14110D"          # app background — warm near-black, not pure #000
-SURFACE = "#1F1A14"       # card / container background
-SURFACE_BORDER = "#3A2F20"
-ACCENT = "#E8A33D"        # brass/amber — the wire-service signature
-ACCENT_DIM = "#8A6A2F"
-TEXT = "#F2E9DA"          # warm parchment
-TEXT_MUTED = "#A69A85"
-POSITIVE = "#6FCF97"
-NEGATIVE = "#EB5757"
-NEUTRAL = "#B8AD97"
+DARK_PALETTE = dict(
+    INK="#14110D", SURFACE="#1F1A14", SURFACE_BORDER="#3A2F20",
+    ACCENT="#E8A33D", ACCENT_DIM="#8A6A2F",
+    TEXT="#F2E9DA", TEXT_MUTED="#A69A85",
+    POSITIVE="#6FCF97", NEGATIVE="#EB5757", NEUTRAL="#B8AD97",
+)
+
+LIGHT_PALETTE = dict(
+    INK="#F5EFE2", SURFACE="#FFFFFF", SURFACE_BORDER="#DCD0B4",
+    ACCENT="#B8791F", ACCENT_DIM="#D8B274",
+    TEXT="#241F16", TEXT_MUTED="#6B6153",
+    POSITIVE="#2F9E5B", NEGATIVE="#D64545", NEUTRAL="#8B8272",
+)
 
 FONT_DISPLAY = "'Playfair Display', Georgia, serif"
 FONT_MONO = "'IBM Plex Mono', 'Courier New', monospace"
 
+# Initialize with dark defaults — overwritten by set_theme_mode() each run.
+INK = DARK_PALETTE["INK"]
+SURFACE = DARK_PALETTE["SURFACE"]
+SURFACE_BORDER = DARK_PALETTE["SURFACE_BORDER"]
+ACCENT = DARK_PALETTE["ACCENT"]
+ACCENT_DIM = DARK_PALETTE["ACCENT_DIM"]
+TEXT = DARK_PALETTE["TEXT"]
+TEXT_MUTED = DARK_PALETTE["TEXT_MUTED"]
+POSITIVE = DARK_PALETTE["POSITIVE"]
+NEGATIVE = DARK_PALETTE["NEGATIVE"]
+NEUTRAL = DARK_PALETTE["NEUTRAL"]
 SENTIMENT_COLORS = {"Positive": POSITIVE, "Negative": NEGATIVE, "Neutral": NEUTRAL}
+
+
+def set_theme_mode(dark: bool):
+    """Reassign the module-level color tokens. Call before inject_theme()/masthead()/etc."""
+    global INK, SURFACE, SURFACE_BORDER, ACCENT, ACCENT_DIM, TEXT, TEXT_MUTED
+    global POSITIVE, NEGATIVE, NEUTRAL, SENTIMENT_COLORS
+    palette = DARK_PALETTE if dark else LIGHT_PALETTE
+    INK = palette["INK"]
+    SURFACE = palette["SURFACE"]
+    SURFACE_BORDER = palette["SURFACE_BORDER"]
+    ACCENT = palette["ACCENT"]
+    ACCENT_DIM = palette["ACCENT_DIM"]
+    TEXT = palette["TEXT"]
+    TEXT_MUTED = palette["TEXT_MUTED"]
+    POSITIVE = palette["POSITIVE"]
+    NEGATIVE = palette["NEGATIVE"]
+    NEUTRAL = palette["NEUTRAL"]
+    SENTIMENT_COLORS = {"Positive": POSITIVE, "Negative": NEGATIVE, "Neutral": NEUTRAL}
 
 
 def inject_theme():
@@ -61,14 +98,59 @@ def inject_theme():
             color: {TEXT};
         }}
 
-        /* Section header rule under st.markdown("### ...") headings */
         .stMarkdown h3 {{
             border-bottom: 1px solid {SURFACE_BORDER};
             padding-bottom: 0.4rem;
             margin-top: 1.6rem;
         }}
 
-        /* Tabs — amber underline on the active tab, wire-ticker feel */
+        /* --- Sidebar shell --- */
+        [data-testid="stSidebar"] {{
+            background-color: {SURFACE};
+            border-right: 1px solid {SURFACE_BORDER};
+        }}
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {{
+            color: {TEXT};
+        }}
+
+        /* --- Sidebar nav buttons (robust — no :has()/hidden-label hacks) --- */
+        [data-testid="stSidebar"] .stButton {{
+            margin-bottom: 2px;
+        }}
+        [data-testid="stSidebar"] .stButton > button {{
+            font-family: {FONT_MONO} !important;
+            text-transform: none !important;
+            letter-spacing: 0.02em !important;
+            font-size: 0.92rem !important;
+            text-align: left !important;
+            justify-content: flex-start !important;
+            width: 100%;
+            background-color: transparent !important;
+            color: {TEXT_MUTED} !important;
+            border: none !important;
+            border-left: 3px solid transparent !important;
+            border-radius: 3px !important;
+            padding: 0.55rem 0.75rem !important;
+        }}
+        [data-testid="stSidebar"] .stButton > button:hover {{
+            background-color: rgba(232, 163, 61, 0.10) !important;
+            color: {ACCENT} !important;
+        }}
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] {{
+            background-color: rgba(232, 163, 61, 0.14) !important;
+            color: {ACCENT} !important;
+            border-left: 3px solid {ACCENT} !important;
+            font-weight: 600 !important;
+        }}
+
+        /* Dark/light toggle + other sidebar widgets */
+        [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {{
+            font-family: {FONT_MONO};
+            font-size: 0.8rem;
+            color: {TEXT_MUTED};
+        }}
+
+        /* --- Tabs (still used for comment sentiment filters) --- */
         [data-testid="stTabs"] [data-baseweb="tab-list"] {{
             gap: 4px;
             border-bottom: 1px solid {SURFACE_BORDER};
@@ -87,8 +169,8 @@ def inject_theme():
             background-color: {ACCENT} !important;
         }}
 
-        /* Buttons */
-        .stButton > button {{
+        /* --- Buttons (main content area) --- */
+        .main .stButton > button {{
             font-family: {FONT_MONO};
             text-transform: uppercase;
             letter-spacing: 0.06em;
@@ -99,13 +181,13 @@ def inject_theme():
             border-radius: 2px;
             transition: all 0.15s ease;
         }}
-        .stButton > button:hover {{
+        .main .stButton > button:hover {{
             background-color: {ACCENT};
             color: {INK};
             border-color: {ACCENT};
         }}
 
-        /* Text inputs / text areas / number inputs */
+        /* --- Inputs --- */
         .stTextInput input, .stTextArea textarea, .stNumberInput input {{
             background-color: {SURFACE} !important;
             color: {TEXT} !important;
@@ -114,7 +196,7 @@ def inject_theme():
             border-radius: 2px !important;
         }}
 
-        /* Metrics */
+        /* --- Metrics --- */
         [data-testid="stMetric"] {{
             background-color: {SURFACE};
             border: 1px solid {SURFACE_BORDER};
@@ -134,40 +216,62 @@ def inject_theme():
             color: {TEXT} !important;
         }}
 
-        /* Bordered containers (used for the executive summary "dispatch card") */
+        /* --- Bordered containers (dispatch card) --- */
         div[data-testid="stVerticalBlockBorderWrapper"] {{
             background-color: {SURFACE};
             border: 1px dashed {ACCENT_DIM} !important;
             border-radius: 2px;
         }}
 
-        /* Dataframes */
+        /* --- Dataframes --- */
         [data-testid="stDataFrame"] {{
             border: 1px solid {SURFACE_BORDER};
             border-radius: 2px;
         }}
 
-        /* Expander */
+        /* --- Expander --- */
         [data-testid="stExpander"] {{
             background-color: {SURFACE};
             border: 1px solid {SURFACE_BORDER};
             border-radius: 2px;
         }}
 
-        /* Alerts (info/warning/error) keep readable on dark bg */
+        /* --- File uploader --- */
+        [data-testid="stFileUploader"] section {{
+            background-color: {SURFACE};
+            border: 1px dashed {SURFACE_BORDER};
+            border-radius: 2px;
+        }}
+
+        /* --- Alerts --- */
         [data-testid="stAlert"] {{
             border-radius: 2px;
             font-family: {FONT_MONO};
         }}
 
-        /* Dividers */
         hr {{
             border-color: {SURFACE_BORDER} !important;
         }}
 
-        /* Hide default Streamlit chrome for a cleaner terminal feel */
         #MainMenu, footer {{ visibility: hidden; }}
         </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def sidebar_brand(label):
+    """Small wordmark shown above the sidebar nav."""
+    st.sidebar.markdown(
+        f"""
+        <div style="padding: 0.5rem 0.2rem 0.9rem 0.2rem; border-bottom: 1px solid {SURFACE_BORDER};
+                    margin-bottom: 0.75rem;">
+            <div style="font-family: {FONT_MONO}; text-transform: uppercase; letter-spacing: 0.15em;
+                        font-size: 0.65rem; color: {ACCENT};">Article Analyzer</div>
+            <div style="font-family: {FONT_DISPLAY}; font-weight: 700; font-size: 1.25rem; color: {TEXT};">
+                {label}
+            </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -199,8 +303,8 @@ def masthead(eyebrow, title, subtitle):
 
 def dispatch_card():
     """
-    Wrap the executive summary in a telex-printout style card.
-    Use as: `with dispatch_card(): st.markdown(summary)` — native container so
+    Wrap a result in a telex-printout style card.
+    Use as: `with dispatch_card(): st.markdown(text)` — native container so
     nested markdown (##, bullets, etc.) renders correctly.
     """
     return st.container(border=True)
@@ -231,3 +335,31 @@ def sentiment_chip_row(counts_dict, total):
             """,
             unsafe_allow_html=True,
         )
+
+
+def copy_button(text, key):
+    """
+    Client-side 'copy to clipboard' button — no Streamlit rerun involved.
+    Text is placed in a hidden, HTML-escaped textarea and copied via the
+    browser's Clipboard API, so no user content is interpolated into JS.
+    """
+    safe_text = html.escape(text or "")
+    st.markdown(
+        f"""
+        <div style="margin-top: 0.4rem;">
+            <textarea id="copy_src_{key}" style="position:absolute; left:-9999px;">{safe_text}</textarea>
+            <button onclick="
+                const el = document.getElementById('copy_src_{key}');
+                navigator.clipboard.writeText(el.value);
+                const btn = document.getElementById('copy_btn_{key}');
+                btn.innerText = '✅ Copied';
+                setTimeout(() => {{ btn.innerText = '📋 Copy result'; }}, 1500);
+            " id="copy_btn_{key}" style="
+                font-family: {FONT_MONO}; font-size: 0.75rem; text-transform: uppercase;
+                letter-spacing: 0.05em; background: transparent; color: {ACCENT};
+                border: 1px solid {ACCENT_DIM}; border-radius: 2px; padding: 0.35rem 0.7rem;
+                cursor: pointer;">📋 Copy result</button>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )

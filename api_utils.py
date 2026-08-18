@@ -29,6 +29,22 @@ MODEL_OPTIONS = {
 }
 
 VALID_LABELS = ("Positive", "Negative", "Neutral")
+EMOTION_LABELS = ["Joy", "Sadness", "Anger", "Fear", "Surprise", "Disgust"]
+
+
+def _deduplicate_bullet_lines(text: str) -> str:
+    """Remove consecutive duplicate bullet lines (e.g., '- Confidence: ...' repeated)."""
+    lines = text.splitlines()
+    cleaned = []
+    last_clean = None
+    for line in lines:
+        # Strip leading bullet markers (*, -, •) and whitespace for comparison
+        stripped = line.lstrip("*•- ").strip()
+        if stripped == last_clean:
+            continue   # skip duplicate
+        cleaned.append(line)
+        last_clean = stripped
+    return "\n".join(cleaned)
 
 
 def _post_openrouter(api_key, model, system_prompt, user_prompt, max_tokens, temperature, json_mode):
@@ -191,3 +207,206 @@ def generate_executive_summary(api_key, model, comments, video_title=None):
     user_prompt = f"{title_line}Here are {len(sample)} real audience comments (most-liked first):\n\n{comments_blob}"
 
     return call_openrouter(api_key, model, system_prompt, user_prompt, max_tokens=900, temperature=0.4)
+
+
+# ---------------------------------------------------------------------------
+# Structured text analysis — summaries, detailed sentiment, emotions
+# ---------------------------------------------------------------------------
+_LENGTH_INSTRUCTIONS = {
+    "short": "1-2 sentences total",
+    "medium": "3-4 sentences total",
+    "long": "2-3 short paragraphs",
+}
+
+
+def summarize_text(api_key, model, text, length="medium", bullet_points=False):
+    """
+    Real structured summarization: returns (summary, key_phrases, error).
+    key_phrases is a list of short strings pulled from the real input text.
+    """
+    length_instruction = _LENGTH_INSTRUCTIONS.get(length, _LENGTH_INSTRUCTIONS["medium"])
+    format_instruction = (
+        'Format "summary" as a markdown bulleted list (use "- " per line).'
+        if bullet_points else
+        'Write "summary" as flowing prose (no bullets).'
+    )
+    system_prompt = (
+        "You are a precise summarization assistant. Read the user's text and respond "
+        'ONLY with a JSON object: {"summary": "...", "key_phrases": ["...", "..."]}. '
+        f"Summary length: {length_instruction}. {format_instruction} "
+        '"key_phrases" must be 5-8 short noun phrases (2-4 words each) capturing the '
+        "core topics of the text — no duplicates, no full sentences."
+    )
+    content, error = call_openrouter(api_key, model, system_prompt, text, max_tokens=900, temperature=0.4)
+    if error:
+        return None, [], error
+
+    try:
+        parsed = json.loads(_clean_json_block(content))
+        summary = str(parsed.get("summary", "")).strip()
+        key_phrases = [str(p).strip() for p in parsed.get("key_phrases", []) if str(p).strip()]
+        if not summary:
+            return content, [], None
+        return summary, key_phrases, None
+    except json.JSONDecodeError:
+        # Model didn't follow the JSON format — fall back to using the raw text as
+        # the summary rather than losing the result entirely.
+        return content, [], None
+
+
+def _split_into_chunks(text, chunk_chars=6000):
+    """Split real article text into paragraph-respecting chunks near chunk_chars each."""
+    paragraphs = text.split("\n")
+    chunks, current = [], ""
+    for p in paragraphs:
+        if current and len(current) + len(p) > chunk_chars:
+            chunks.append(current)
+            current = p
+        else:
+            current = f"{current}\n{p}" if current else p
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def summarize_long_text(api_key, model, text, length="medium", bullet_points=False,
+                         chunk_chars=6000, progress_callback=None):
+    """
+    Map-reduce summarization for long articles: summarize each chunk, then summarize
+    the combined chunk-summaries into the final result. Reports real progress across
+    chunks via progress_callback(fraction_complete).
+    Returns (summary, key_phrases, error).
+    """
+    if len(text) <= chunk_chars:
+        summary, key_phrases, error = summarize_text(api_key, model, text, length, bullet_points)
+        if progress_callback:
+            progress_callback(1.0)
+        return summary, key_phrases, error
+
+    chunks = _split_into_chunks(text, chunk_chars)
+    partial_summaries = []
+    for i, chunk in enumerate(chunks):
+        chunk_summary, _, error = summarize_text(api_key, model, chunk, length="medium", bullet_points=False)
+        if not error and chunk_summary:
+            partial_summaries.append(chunk_summary)
+        if progress_callback:
+            progress_callback((i + 1) / (len(chunks) + 1))
+
+    if not partial_summaries:
+        if progress_callback:
+            progress_callback(1.0)
+        return None, [], "Could not summarize any part of this article."
+
+    combined = "\n\n".join(partial_summaries)
+    final_summary, key_phrases, error = summarize_text(api_key, model, combined, length, bullet_points)
+    if progress_callback:
+        progress_callback(1.0)
+    return final_summary, key_phrases, error
+
+
+def analyze_sentiment_detailed(api_key, model, text):
+    """
+    Real structured sentiment scoring. Returns (dict, error) where dict is
+    {"positive": float, "negative": float, "neutral": float, "explanation": str}.
+    """
+    system_prompt = (
+        "You are a sentiment analysis expert. Analyze the user's text and respond ONLY "
+        'with JSON: {"positive": <0-100>, "negative": <0-100>, "neutral": <0-100>, '
+        '"explanation": "one or two sentences"}. The three numbers should sum to '
+        "approximately 100 and reflect how strongly each sentiment is present."
+    )
+    content, error = call_openrouter(api_key, model, system_prompt, text, max_tokens=400, temperature=0.2)
+    if error:
+        return None, error
+    try:
+        parsed = json.loads(_clean_json_block(content))
+        scores = {k: float(parsed.get(k, 0)) for k in ("positive", "negative", "neutral")}
+        scores["explanation"] = str(parsed.get("explanation", "")).strip()
+        return scores, None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None, f"Could not parse sentiment scores: {content[:200]}"
+
+
+def _sentiment_unit_prompt():
+    return (
+        "You are a sentiment analysis expert. Analyze the sentiment of this excerpt and "
+        "respond with:\n- Sentiment: Positive/Negative/Neutral/Mixed\n- Confidence: XX%\n"
+        "- Brief explanation of your decision\nKeep it brief and well-formatted."
+    )
+
+
+def _sentiment_combine_prompt():
+    return (
+        "You are given sentiment assessments of consecutive excerpts from one long "
+        "document. Synthesize ONE overall verdict for the whole document, in the same "
+        "format:\n- Sentiment: Positive/Negative/Neutral/Mixed\n- Confidence: XX%\n"
+        "- Brief explanation referencing what drove the verdict"
+    )
+
+
+def analyze_sentiment_long(api_key, model, text, chunk_chars=6000, progress_callback=None):
+    """
+    Map-reduce sentiment analysis for long articles: analyze each chunk, then
+    synthesize one overall verdict. Reports real progress across chunks via
+    progress_callback(fraction_complete). Returns (result_text, error).
+    """
+    if len(text) <= chunk_chars:
+        content, error = call_openrouter(
+            api_key, model, _sentiment_unit_prompt(), text, max_tokens=500, temperature=0.3,
+        )
+        if progress_callback:
+            progress_callback(1.0)
+        if content:
+            content = _deduplicate_bullet_lines(content)
+        return content, error
+
+    chunks = _split_into_chunks(text, chunk_chars)
+    partials = []
+    for i, chunk in enumerate(chunks):
+        content, error = call_openrouter(
+            api_key, model, _sentiment_unit_prompt(), chunk, max_tokens=300, temperature=0.3,
+        )
+        if not error and content:
+            # Also dedupe each chunk's output (optional, but harmless)
+            content = _deduplicate_bullet_lines(content)
+            partials.append(f"Excerpt {i + 1}: {content}")
+        if progress_callback:
+            progress_callback((i + 1) / (len(chunks) + 1))
+
+    if not partials:
+        if progress_callback:
+            progress_callback(1.0)
+        return None, "Could not analyze sentiment for any part of this text."
+
+    combined = "\n\n".join(partials)
+    final_content, error = call_openrouter(
+        api_key, model, _sentiment_combine_prompt(), combined, max_tokens=500, temperature=0.3,
+    )
+    if progress_callback:
+        progress_callback(1.0)
+    if final_content:
+        final_content = _deduplicate_bullet_lines(final_content)
+    return final_content, error
+
+
+def analyze_emotions(api_key, model, text):
+    """
+    Real emotion classification. Returns (dict {emotion: score 0-100}, error).
+    Scores are independent (not required to sum to 100) since multiple emotions
+    can coexist.
+    """
+    system_prompt = (
+        "You are an emotion classification expert. Score how strongly each of these "
+        f"emotions is expressed in the user's text: {', '.join(EMOTION_LABELS)}. "
+        "Respond ONLY with a JSON object mapping each exact label to an integer 0-100, "
+        f'e.g. {{"Joy": 10, "Sadness": 0, ...}} using exactly these keys: {EMOTION_LABELS}.'
+    )
+    content, error = call_openrouter(api_key, model, system_prompt, text, max_tokens=300, temperature=0.2)
+    if error:
+        return None, error
+    try:
+        parsed = json.loads(_clean_json_block(content))
+        scores = {label: float(parsed.get(label, 0)) for label in EMOTION_LABELS}
+        return scores, None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None, f"Could not parse emotion scores: {content[:200]}"
