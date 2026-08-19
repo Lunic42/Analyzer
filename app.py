@@ -217,13 +217,17 @@ def render_full_youtube_result(result, key_prefix):
         mime="text/csv",
         key=f"{key_prefix}_download_csv",
     )
-    st.download_button(
-        "⬇️ Download comments as Excel",
-        ca.to_excel_bytes(df[DISPLAY_COLS].rename(columns=RENAME_COLS)),
-        file_name=f"{key_prefix}_comments_sentiment.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"{key_prefix}_download_xlsx",
-    )
+    xlsx_bytes, xlsx_error = ca.try_to_excel_bytes(df[DISPLAY_COLS].rename(columns=RENAME_COLS))
+    if xlsx_bytes:
+        st.download_button(
+            "⬇️ Download comments as Excel",
+            xlsx_bytes,
+            file_name=f"{key_prefix}_comments_sentiment.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}_download_xlsx",
+        )
+    else:
+        st.caption(f"⚠️ Excel export unavailable: {xlsx_error}")
 
 
 def render_reply_chains(df, key_prefix):
@@ -346,12 +350,16 @@ def render_cross_video_analytics(all_comments, key_prefix):
             file_name="filtered_comments.csv", mime="text/csv", key=f"{key_prefix}_export_csv",
         )
     with ec2:
-        st.download_button(
-            "⬇️ Excel", ca.to_excel_bytes(export_df),
-            file_name="filtered_comments.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"{key_prefix}_export_xlsx",
-        )
+        xlsx_bytes, xlsx_error = ca.try_to_excel_bytes(export_df)
+        if xlsx_bytes:
+            st.download_button(
+                "⬇️ Excel", xlsx_bytes,
+                file_name="filtered_comments.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"{key_prefix}_export_xlsx",
+            )
+        else:
+            st.caption(f"⚠️ Excel export unavailable: {xlsx_error}")
 
 
 # ---------------------------------------------------------------------------

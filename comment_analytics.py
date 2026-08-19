@@ -161,3 +161,18 @@ def to_excel_bytes(df):
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Comments")
     return buffer.getvalue()
+
+
+def try_to_excel_bytes(df):
+    """
+    Same as to_excel_bytes(), but never raises — returns (bytes, error).
+    Use this from the UI so a missing/broken openpyxl install degrades to a
+    warning instead of crashing the whole Streamlit script (Streamlit halts
+    the entire page render on any uncaught exception).
+    """
+    try:
+        return to_excel_bytes(df), None
+    except ImportError:
+        return None, "Excel export needs the 'openpyxl' package — add it to requirements.txt and redeploy."
+    except Exception as e:
+        return None, f"Couldn't build the Excel file: {e}"
