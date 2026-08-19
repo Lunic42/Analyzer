@@ -82,3 +82,37 @@ def run_youtube_analysis(url, max_comments, youtube_api_key, openrouter_api_key,
     result["summary_error"] = summary_error
 
     return result
+
+
+def run_youtube_analysis_multi(urls, max_comments_per_video, youtube_api_key, openrouter_api_key,
+                                progress_callback=None, model=DEFAULT_MODEL):
+    """
+    Run the real single-video pipeline across several URLs. Each result is
+    the same shape as run_youtube_analysis(), plus every comment dict gets a
+    'video_title' tag so results can be merged into one cross-video view.
+
+    progress_callback(fraction_complete) reports overall progress across all
+    videos (not per-video), so the caller only needs one progress bar.
+    """
+    urls = [u.strip() for u in urls if u and u.strip()]
+    results = []
+    total = max(1, len(urls))
+
+    for i, url in enumerate(urls):
+        def per_video_progress(p, i=i):
+            if progress_callback:
+                progress_callback((i + p) / total)
+
+        result = run_youtube_analysis(
+            url, max_comments_per_video, youtube_api_key, openrouter_api_key,
+            progress_callback=per_video_progress, model=model,
+        )
+        video_title = result["video_meta"]["title"] if result.get("video_meta") else url
+        for c in result.get("comments", []):
+            c["video_title"] = video_title
+        results.append(result)
+
+        if progress_callback:
+            progress_callback((i + 1) / total)
+
+    return results

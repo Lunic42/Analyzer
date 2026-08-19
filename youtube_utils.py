@@ -144,3 +144,48 @@ def fetch_comments(api_key, video_id=None, channel_id=None, max_results=200, ord
         return comments, f"Network error while fetching comments: {e}"
 
     return comments, None
+
+
+def fetch_replies(api_key, parent_comment_id, max_results=50):
+    """
+    Fetch real replies to a specific top-level comment (a real reply chain).
+    Returns (replies, error_message).
+    """
+    replies = []
+    page_token = None
+    try:
+        while len(replies) < max_results:
+            params = {
+                "part": "snippet",
+                "parentId": parent_comment_id,
+                "key": api_key,
+                "maxResults": min(100, max_results - len(replies)),
+                "textFormat": "plainText",
+            }
+            if page_token:
+                params["pageToken"] = page_token
+
+            resp = requests.get(f"{YOUTUBE_API_BASE}/comments", params=params, timeout=15)
+            if resp.status_code != 200:
+                return replies, f"YouTube API error {resp.status_code}: {resp.text[:200]}"
+
+            data = resp.json()
+            for item in data.get("items", []):
+                s = item["snippet"]
+                replies.append({
+                    "comment_id": item["id"],
+                    "author": s.get("authorDisplayName", "Unknown"),
+                    "text": s.get("textDisplay", ""),
+                    "like_count": int(s.get("likeCount", 0)),
+                    "published_at": s.get("publishedAt", ""),
+                })
+
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+    except requests.exceptions.Timeout:
+        return replies, "Request to YouTube timed out."
+    except requests.exceptions.RequestException as e:
+        return replies, f"Network error while fetching replies: {e}"
+
+    return replies, None

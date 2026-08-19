@@ -1,68 +1,32 @@
 """
 Visual theme for Article Analyzer — a "wire desk" identity: the app reads like
 a press-analysis terminal pulling live reports off a wire. Warm ink-black
-(or, in light mode, warm parchment) background, a brass/amber accent, a serif
-masthead paired with a monospace face for data and labels.
+background, a brass/amber accent, a serif masthead paired with a monospace
+face for data and labels.
 
-Everything here is presentation only — no business logic. Color tokens are
-plain module-level globals that get reassigned by set_theme_mode(); every
-function below reads them by name at call time, so callers should always
-call set_theme_mode() (if switching modes) before inject_theme()/masthead()/etc.
-in the same run.
+Everything here is presentation only — no business logic.
 """
 import html
 import streamlit as st
 
 # ---------------------------------------------------------------------------
-# Palettes
+# Palette (single fixed theme — no light/dark toggle)
 # ---------------------------------------------------------------------------
-DARK_PALETTE = dict(
-    INK="#14110D", SURFACE="#1F1A14", SURFACE_BORDER="#3A2F20",
-    ACCENT="#E8A33D", ACCENT_DIM="#8A6A2F",
-    TEXT="#F2E9DA", TEXT_MUTED="#A69A85",
-    POSITIVE="#6FCF97", NEGATIVE="#EB5757", NEUTRAL="#B8AD97",
-)
-
-LIGHT_PALETTE = dict(
-    INK="#F5EFE2", SURFACE="#FFFFFF", SURFACE_BORDER="#DCD0B4",
-    ACCENT="#B8791F", ACCENT_DIM="#D8B274",
-    TEXT="#241F16", TEXT_MUTED="#6B6153",
-    POSITIVE="#2F9E5B", NEGATIVE="#D64545", NEUTRAL="#8B8272",
-)
+INK = "#14110D"
+SURFACE = "#1F1A14"
+SURFACE_BORDER = "#3A2F20"
+ACCENT = "#E8A33D"
+ACCENT_DIM = "#8A6A2F"
+TEXT = "#F2E9DA"
+TEXT_MUTED = "#A69A85"
+POSITIVE = "#6FCF97"
+NEGATIVE = "#EB5757"
+NEUTRAL = "#B8AD97"
 
 FONT_DISPLAY = "'Playfair Display', Georgia, serif"
 FONT_MONO = "'IBM Plex Mono', 'Courier New', monospace"
 
-# Initialize with dark defaults — overwritten by set_theme_mode() each run.
-INK = DARK_PALETTE["INK"]
-SURFACE = DARK_PALETTE["SURFACE"]
-SURFACE_BORDER = DARK_PALETTE["SURFACE_BORDER"]
-ACCENT = DARK_PALETTE["ACCENT"]
-ACCENT_DIM = DARK_PALETTE["ACCENT_DIM"]
-TEXT = DARK_PALETTE["TEXT"]
-TEXT_MUTED = DARK_PALETTE["TEXT_MUTED"]
-POSITIVE = DARK_PALETTE["POSITIVE"]
-NEGATIVE = DARK_PALETTE["NEGATIVE"]
-NEUTRAL = DARK_PALETTE["NEUTRAL"]
 SENTIMENT_COLORS = {"Positive": POSITIVE, "Negative": NEGATIVE, "Neutral": NEUTRAL}
-
-
-def set_theme_mode(dark: bool):
-    """Reassign the module-level color tokens. Call before inject_theme()/masthead()/etc."""
-    global INK, SURFACE, SURFACE_BORDER, ACCENT, ACCENT_DIM, TEXT, TEXT_MUTED
-    global POSITIVE, NEGATIVE, NEUTRAL, SENTIMENT_COLORS
-    palette = DARK_PALETTE if dark else LIGHT_PALETTE
-    INK = palette["INK"]
-    SURFACE = palette["SURFACE"]
-    SURFACE_BORDER = palette["SURFACE_BORDER"]
-    ACCENT = palette["ACCENT"]
-    ACCENT_DIM = palette["ACCENT_DIM"]
-    TEXT = palette["TEXT"]
-    TEXT_MUTED = palette["TEXT_MUTED"]
-    POSITIVE = palette["POSITIVE"]
-    NEGATIVE = palette["NEGATIVE"]
-    NEUTRAL = palette["NEUTRAL"]
-    SENTIMENT_COLORS = {"Positive": POSITIVE, "Negative": NEGATIVE, "Neutral": NEUTRAL}
 
 
 def inject_theme():
@@ -143,7 +107,7 @@ def inject_theme():
             font-weight: 600 !important;
         }}
 
-        /* Dark/light toggle + other sidebar widgets */
+        /* Sidebar widget labels (file uploaders, etc. rendered in-page, not sidebar today) */
         [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {{
             font-family: {FONT_MONO};
             font-size: 0.8rem;
@@ -261,10 +225,10 @@ def inject_theme():
 
 
 def sidebar_brand(label):
-    """Small wordmark shown above the sidebar nav."""
+    """Small wordmark shown above the sidebar nav — padding matches nav buttons so text aligns."""
     st.sidebar.markdown(
         f"""
-        <div style="padding: 0.5rem 0.2rem 0.9rem 0.2rem; border-bottom: 1px solid {SURFACE_BORDER};
+        <div style="padding: 0.4rem 0.75rem 0.9rem 0.75rem; border-bottom: 1px solid {SURFACE_BORDER};
                     margin-bottom: 0.75rem;">
             <div style="font-family: {FONT_MONO}; text-transform: uppercase; letter-spacing: 0.15em;
                         font-size: 0.65rem; color: {ACCENT};">Article Analyzer</div>

@@ -5,17 +5,17 @@ import pandas as pd
 import ui_theme
 from ui_theme import inject_theme, masthead, sidebar_brand, dispatch_card, sentiment_chip_row, copy_button
 from api_utils import summarize_long_text, analyze_sentiment_long, DEFAULT_MODEL
-from analysis import run_youtube_analysis
+from analysis import run_youtube_analysis, run_youtube_analysis_multi
 from file_utils import extract_text_from_upload
 from history_utils import add_history_entry, get_history, clear_history
+from youtube_utils import fetch_replies
+import comment_analytics as ca
 
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Article Analyzer", page_icon="🗞️", layout="wide")
-
-if "dark_mode" not in st.session_state:
-    st.session_state["dark_mode"] = True
+inject_theme()
 
 
 def get_secret(name):
@@ -29,17 +29,14 @@ OPENROUTER_API_KEY = get_secret("OPENROUTER_API_KEY")
 YOUTUBE_API_KEY = get_secret("YOUTUBE_API_KEY")
 
 # ---------------------------------------------------------------------------
-# Sidebar — theme toggle first (so it applies before we render anything else),
-# then brand + nav
+# Sidebar — brand + nav
 # ---------------------------------------------------------------------------
-PAGES = ["📝 Summarize", "💬 Sentiment", "🔍 Full Analysis", "🎥 YouTube Comments", "🕘 History"]
+PAGES = ["📝 Summarize", "💬 Sentiment", "🎥 YouTube Comments", "🕘 History"]
 
 if "nav_page" not in st.session_state:
     st.session_state["nav_page"] = PAGES[0]
 
 with st.sidebar:
-    
-
     sidebar_brand("Navigate")
     for p in PAGES:
         is_active = st.session_state["nav_page"] == p
@@ -218,8 +215,143 @@ def render_full_youtube_result(result, key_prefix):
         df[DISPLAY_COLS].rename(columns=RENAME_COLS).to_csv(index=False).encode("utf-8"),
         file_name=f"{key_prefix}_comments_sentiment.csv",
         mime="text/csv",
-        key=f"{key_prefix}_download",
+        key=f"{key_prefix}_download_csv",
     )
+    st.download_button(
+        "⬇️ Download comments as Excel",
+        ca.to_excel_bytes(df[DISPLAY_COLS].rename(columns=RENAME_COLS)),
+        file_name=f"{key_prefix}_comments_sentiment.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"{key_prefix}_download_xlsx",
+    )
+
+
+def render_reply_chains(df, key_prefix):
+    """Real reply threads — top comments by real reply_count, replies fetched
+    on demand (lazy) via the real YouTube comments.list endpoint."""
+    top_replied = ca.most_replied_comments(df, n=10)
+    top_replied = top_replied[top_replied["reply_count"] > 0]
+    if top_replied.empty:
+        st.info("No comments with replies in this set.")
+        return
+
+    if "loaded_replies" not in st.session_state:
+        st.session_state["loaded_replies"] = {}
+
+    for _, row in top_replied.iterrows():
+        cid = row["comment_id"]
+        with st.container(border=True):
+            video_note = f" · *{row['video_title']}*" if "video_title" in row and pd.notna(row.get("video_title")) else ""
+            st.markdown(f"**{row['author']}** — {row['like_count']} likes · {row['reply_count']} replies{video_note}")
+            st.write(row["text"])
+            if cid in st.session_state["loaded_replies"]:
+                replies, error = st.session_state["loaded_replies"][cid]
+                if error:
+                    st.error(error)
+                for r in replies:
+                    st.markdown(f"↳ **{r['author']}**: {r['text']} · {r['like_count']} likes")
+            else:
+                if st.button(f"💬 Load {row['reply_count']} replies", key=f"{key_prefix}_load_{cid}"):
+                    replies, error = fetch_replies(YOUTUBE_API_KEY, cid, max_results=50)
+                    st.session_state["loaded_replies"][cid] = (replies, error)
+                    st.rerun()
+
+
+def render_cross_video_analytics(all_comments, key_prefix):
+    """
+    Filters, trends, rankings, spam flags, and commenter stats computed over
+    the real merged comment set (one video, or several if multiple URLs were
+    fetched at once).
+    """
+    df = pd.DataFrame(all_comments)
+    if df.empty:
+        return
+
+    st.markdown("### 🔬 Cross-Video Analytics")
+
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        min_likes = st.number_input("Minimum likes", min_value=0, value=0, step=1, key=f"{key_prefix}_min_likes")
+    with col_f2:
+        start_date = st.date_input("From date", value=None, key=f"{key_prefix}_start_date")
+    with col_f3:
+        end_date = st.date_input("To date", value=None, key=f"{key_prefix}_end_date")
+
+    filtered = ca.filter_comments(df, min_likes=min_likes, start_date=start_date, end_date=end_date)
+    st.caption(f"Showing {len(filtered):,} of {len(df):,} fetched comments after filters.")
+
+    if filtered.empty:
+        st.info("No comments match these filters.")
+        return
+
+    st.markdown("#### 📈 Sentiment Trend Over Time")
+    freq_label = st.radio("Bucket by", ["Day", "Week", "Month"], horizontal=True, key=f"{key_prefix}_trend_freq")
+    freq_map = {"Day": "D", "Week": "W", "Month": "M"}
+    trend = ca.sentiment_trend(filtered, freq=freq_map[freq_label])
+    if trend.empty:
+        st.info("Not enough dated comments to chart a trend.")
+    else:
+        st.line_chart(trend)
+
+    st.markdown("#### 🔥 Most Liked Comments")
+    st.dataframe(
+        ca.most_liked_comments(filtered, n=10)[["author", "text", "like_count", "sentiment"]]
+        .rename(columns={"author": "Author", "text": "Comment", "like_count": "Likes", "sentiment": "Sentiment"}),
+        use_container_width=True, hide_index=True,
+    )
+
+    st.markdown("#### 👎 Most-Liked Negative Comments")
+    st.caption(
+        "YouTube hid public dislike counts in 2021, so a real dislike count can't be fetched. "
+        "This is the closest honest proxy: real like counts on comments the sentiment model scored as Negative."
+    )
+    most_liked_neg = ca.most_liked_negative_comments(filtered, n=10)
+    if most_liked_neg.empty:
+        st.info("No negative comments with likes in this set.")
+    else:
+        st.dataframe(
+            most_liked_neg[["author", "text", "like_count"]]
+            .rename(columns={"author": "Author", "text": "Comment", "like_count": "Likes"}),
+            use_container_width=True, hide_index=True,
+        )
+
+    st.markdown("#### 🧵 Reply Chains")
+    st.caption("Top comments by real reply count — click to load the actual replies.")
+    render_reply_chains(filtered, key_prefix=key_prefix)
+
+    st.markdown("#### 🚩 Possible Spam")
+    st.caption("Rule-based flags on real comment text — links, promo phrases, repeated chars, duplicate spam waves. Not a model judgment.")
+    spam_df = ca.detect_possible_spam(filtered)
+    if spam_df.empty:
+        st.success("No comments matched the spam heuristics.")
+    else:
+        st.dataframe(
+            spam_df[["author", "text", "like_count", "spam_reasons"]]
+            .rename(columns={"author": "Author", "text": "Comment", "like_count": "Likes", "spam_reasons": "Flagged for"}),
+            use_container_width=True, hide_index=True,
+        )
+
+    st.markdown("#### 👤 Commenter Analytics")
+    st.caption("Most active commenters in this fetched set (by real comment count).")
+    st.dataframe(ca.commenter_stats(filtered, n=15), use_container_width=True, hide_index=True)
+
+    st.markdown("#### ⬇️ Export Filtered Comments")
+    export_cols = [c for c in ["video_title", "author", "text", "like_count", "sentiment",
+                                "published_at", "reply_count", "author_channel_url"] if c in filtered.columns]
+    export_df = filtered[export_cols]
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        st.download_button(
+            "⬇️ CSV", export_df.to_csv(index=False).encode("utf-8"),
+            file_name="filtered_comments.csv", mime="text/csv", key=f"{key_prefix}_export_csv",
+        )
+    with ec2:
+        st.download_button(
+            "⬇️ Excel", ca.to_excel_bytes(export_df),
+            file_name="filtered_comments.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}_export_xlsx",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -280,45 +412,11 @@ elif page == PAGES[1]:
             st.warning("Please enter some text or upload a file to analyze.")
 
 # ---------------------------------------------------------------------------
-# Page: Full Analysis
-# ---------------------------------------------------------------------------
-elif page == PAGES[2]:
-    st.markdown("##### Full Analysis")
-    effective_text, source = file_or_pasted_text("upload_full", st.session_state.get("full_text", ""))
-    text3 = st.text_area("Paste your article here:", height=200, key="full_text",
-                          placeholder="Enter or paste your article text here...")
-    if source == "pasted text":
-        effective_text = text3
-    char_count_caption(effective_text)
-
-    if st.button("🔍 Run Full Analysis", key="full_btn"):
-        if effective_text and effective_text.strip():
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("### 📊 Sentiment")
-                sentiment_result = run_with_progress(analyze_sentiment, effective_text, "Analyzing sentiment...")
-                with st.expander("Full sentiment result", expanded=True):
-                    with dispatch_card():
-                        st.write(sentiment_result)
-                    copy_button(sentiment_result, key="full_sentiment_copy")
-            with col2:
-                st.markdown("### 📝 Summary")
-                summary_result = run_with_progress(summarize_with_llm, effective_text, "Summarizing...")
-                with st.expander("Full summary", expanded=True):
-                    with dispatch_card():
-                        st.write(summary_result)
-                    copy_button(summary_result, key="full_summary_copy")
-            add_history_entry("Full Analysis", effective_text,
-                               f"Sentiment: {sentiment_result}\n\nSummary: {summary_result}")
-        else:
-            st.warning("Please enter some text or upload a file to analyze.")
-
-# ---------------------------------------------------------------------------
 # Page: YouTube Comments — real data only
 # ---------------------------------------------------------------------------
-elif page == PAGES[3]:
+elif page == PAGES[2]:
     st.markdown("##### YouTube Comment Analyzer")
-    st.caption("Pull real comments from a video (or a whole channel), classify sentiment, and get an executive summary.")
+    st.caption("Pull real comments from one or more videos (or a whole channel), classify sentiment, and get an executive summary.")
 
     if not YOUTUBE_API_KEY:
         st.error("⚠️ YOUTUBE_API_KEY not found in secrets. Add it to `.streamlit/secrets.toml` to use this tab.")
@@ -329,57 +427,74 @@ elif page == PAGES[3]:
     else:
         col_a, col_b = st.columns([3, 1])
         with col_a:
-            yt_url = st.text_input(
-                "Paste a YouTube video or channel URL:",
-                placeholder="https://www.youtube.com/watch?v=... or https://www.youtube.com/@somechannel",
-                key="yt_url",
+            yt_urls_raw = st.text_area(
+                "Paste one or more YouTube video/channel URLs (one per line):",
+                height=90,
+                placeholder="https://www.youtube.com/watch?v=...\nhttps://www.youtube.com/watch?v=...\nhttps://www.youtube.com/@somechannel",
+                key="yt_urls",
             )
         with col_b:
-            max_comments = st.number_input("Max comments", min_value=20, max_value=1000, value=200, step=20)
+            max_comments = st.number_input("Max comments / video", min_value=20, max_value=1000, value=200, step=20)
 
         if st.button("🔎 Fetch & Analyze Comments", key="yt_fetch_btn"):
-            if not yt_url or not yt_url.strip():
-                st.warning("Please paste a YouTube video or channel URL.")
+            urls = [u.strip() for u in (yt_urls_raw or "").splitlines() if u.strip()]
+            if not urls:
+                st.warning("Please paste at least one YouTube video or channel URL.")
             else:
-                progress = st.progress(0.0, text="Fetching and analyzing...")
-                result = run_youtube_analysis(
-                    yt_url, max_comments, YOUTUBE_API_KEY, OPENROUTER_API_KEY,
-                    progress_callback=lambda p: progress.progress(p, text=f"Classifying sentiment... {int(p * 100)}%"),
+                st.session_state["loaded_replies"] = {}  # reset lazy-loaded replies for a fresh fetch
+                progress = st.progress(0.0, text=f"Fetching {len(urls)} video(s)...")
+                results = run_youtube_analysis_multi(
+                    urls, max_comments, YOUTUBE_API_KEY, OPENROUTER_API_KEY,
+                    progress_callback=lambda p: progress.progress(p, text=f"Fetching & analyzing... {int(p * 100)}%"),
                 )
                 progress.empty()
+                st.session_state["yt_results"] = results
 
-                if result["resolve_error"]:
-                    st.error(result["resolve_error"])
-                else:
-                    if result["fetch_error"]:
-                        st.warning(result["fetch_error"])
-                    if result["batch_errors"]:
-                        with st.expander(f"⚠️ {len(result['batch_errors'])} batch(es) had issues"):
-                            for e in result["batch_errors"]:
-                                st.write(e)
-                    st.session_state["yt_result"] = result
+                for result in results:
+                    if result["resolve_error"]:
+                        continue
                     if result.get("comments"):
-                        title = result["video_meta"]["title"] if result.get("video_meta") else yt_url
+                        title = result["video_meta"]["title"] if result.get("video_meta") else "video"
                         add_history_entry(
                             "YouTube", title,
                             result.get("summary") or "(no summary)",
                             extra={"comment_count": len(result["comments"])},
                         )
 
-        if "yt_result" in st.session_state and st.session_state["yt_result"].get("comments"):
+        if "yt_results" in st.session_state and st.session_state["yt_results"]:
+            results = st.session_state["yt_results"]
             st.divider()
-            render_full_youtube_result(st.session_state["yt_result"], key_prefix="yt")
+
+            all_comments = []
+            for i, result in enumerate(results):
+                if result["resolve_error"]:
+                    st.error(f"Video {i + 1}: {result['resolve_error']}")
+                    continue
+                title = result["video_meta"]["title"] if result.get("video_meta") else f"Video {i + 1}"
+                with st.expander(f"🎬 {title}", expanded=(len(results) == 1)):
+                    if result.get("fetch_error"):
+                        st.warning(result["fetch_error"])
+                    if result.get("batch_errors"):
+                        with st.expander(f"⚠️ {len(result['batch_errors'])} batch(es) had issues", expanded=False):
+                            for e in result["batch_errors"]:
+                                st.write(e)
+                    render_full_youtube_result(result, key_prefix=f"yt_{i}")
+                all_comments.extend(result.get("comments") or [])
+
+            if all_comments:
+                st.divider()
+                render_cross_video_analytics(all_comments, key_prefix="yt_cross")
 
 # ---------------------------------------------------------------------------
 # Page: History
 # ---------------------------------------------------------------------------
-elif page == PAGES[4]:
+elif page == PAGES[3]:
     st.markdown("##### Session History")
     st.caption("Everything you've run this session — resets when the browser tab closes.")
 
     entries = get_history()
     if not entries:
-        st.info("No history yet — results from Summarize, Sentiment, Full Analysis, and YouTube will show up here.")
+        st.info("No history yet — results from Summarize, Sentiment, and YouTube will show up here.")
     else:
         if st.button("🗑️ Clear history", key="clear_history_btn"):
             clear_history()
